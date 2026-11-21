@@ -1,0 +1,40 @@
+# Runs collect_books.py every day at 9:00 am Eastern time and saves the snapshot in data/.
+name: Daily 9am snapshot
+
+on:
+  schedule:
+    - cron: "40 13 * * *"   # 13:40 UTC = 8:40 am Eastern (EST). Starts early because GitHub can run late.
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write             # needed to save the new file back into the repo
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: Wait until exactly 9:00 am Eastern (14:00 UTC)
+        if: github.event_name == 'schedule'
+        run: |
+          target=$(date -u -d "today 14:00" +%s)
+          now=$(date -u +%s)
+          if [ "$now" -lt "$target" ]; then sleep $((target - now)); fi
+
+      - name: Take the snapshot
+        run: python collect_books.py
+
+      - name: Save it to the repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git commit -m "Snapshot $(date -u +%Y-%m-%d)" || echo "nothing new"
+          git push
