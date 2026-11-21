@@ -8,7 +8,8 @@ starting with all cash at Coinbase.
 
 | Folder / file | What it is |
 | --- | --- |
-| `paper/` | The project paper (Word). Model formulation, constraints, data and method. |
+| `paper/MODEL.md` | **Start here:** the model (LP) on one page, with a plain-English line for each constraint. |
+| `paper/` | The full paper as PDF (readable on GitHub) and Word. |
 | `colab/btc_routing.ipynb` | The Colab notebook: builds the price levels, solves the model, prints the path and cost breakdown, runs the experiments. |
 | `colab/btc_routing_colab.py` | Same notebook as plain text, one `# %% CELL` block per Colab cell. |
 | `collect_books.py` | Takes one order book snapshot from all 4 exchanges. |
