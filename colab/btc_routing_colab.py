@@ -1,0 +1,261 @@
+# ==========================================================================================
+# IEN 441 - Optimal Cross-Venue Execution of BTC
+# Google Colab notebook, one cell per block below.
+# Paste each block that starts with "# %% CELL" into its own Colab cell and run them in order.
+# ==========================================================================================
+
+
+# %% CELL 1 - Install and import the tools ------------------------------------------------
+# PuLP builds the optimization model and solves it with the free CBC solver.
+# (In Colab, the line below installs PuLP. The "!" means "run this as a terminal command".)
+# !pip install pulp
+
+import json
+import pulp
+import pandas as pd
+
+
+# %% CELL 2 - Load one 9am order book snapshot --------------------------------------------
+# The snapshots come from the GitHub repo "ien441-btc-snapshots" (folder data/).
+# Download the snapshot you want from GitHub, then run this cell and pick the file
+# when Colab asks you to upload it.
+
+try:
+    from google.colab import files          # only works inside Colab
+    uploaded = files.upload()               # opens a file picker
+    SNAPSHOT_FILE = list(uploaded.keys())[0]
+except ImportError:
+    SNAPSHOT_FILE = "snapshot.json"         # when running on a laptop instead of Colab
+
+with open(SNAPSHOT_FILE) as f:
+    snap = json.load(f)
+
+print("Snapshot taken at (UTC):", snap["time_utc"])
+for name, book in snap["exchanges"].items():
+    print(f"  {name:9s} price ${book['mid']:,.2f}   {len(book['asks'])} sell orders saved")
+
+
+# %% CELL 3 - Settings you can change ------------------------------------------------------
+
+EXCHANGES = ["Coinbase", "Kraken", "Gemini", "Bitstamp"]
+START = "Coinbase"          # the whole budget starts here
+
+ROUNDS = list(range(1, 11))  # 10 one-hour rounds: round 1 = 9am, ..., round 10 = 6pm
+HOURS = {1: "9am", 2: "10am", 3: "11am", 4: "12pm", 5: "1pm",
+         6: "2pm", 7: "3pm", 8: "4pm", 9: "5pm", 10: "6pm"}
+
+LEVELS = list(range(1, 11))  # 10 price levels (bands)
+BAND_WIDTH = 0.001           # each level is 0.1% wide: level 1 = 0 to 0.1% above the price, etc.
+
+# Taker fee = the % fee an exchange charges when you buy right away.
+# These are the $1M+ volume tier from each exchange's fee page (checked Nov 2026).
+TAKER_FEE = {
+    "Coinbase": 0.0018,
+    "Kraken":   0.0018,
+    "Gemini":   0.0010,
+    "Bitstamp": 0.0020,     # PLACEHOLDER - not confirmed yet, check bitstamp.net/fee-schedule
+}
+
+# Flat fee for one cash transfer between two exchanges (the F in the model).
+TRANSFER_FEE = 25.0         # PLACEHOLDER - replace with the real USD/USDC withdrawal fees
+
+GOAL_BTC = 100              # D: how much BTC the desk must buy
+REFILL = 0.5                # rho: share of each price level that comes back every hour (0 to 1)
+
+
+# %% CELL 4 - Turn each order book into 10 price levels (p and q) ---------------------------
+# For each exchange, every sell order is put into a level by how far its price is above the
+# mid price. For each level:
+#   q = dollars of BTC for sale in that level
+#   p = average price of that level (weighted by size), plus the taker fee
+
+def make_levels(book, fee):
+    mid = book["mid"]
+    levels = {}
+    for k in LEVELS:
+        low = mid * (1 + BAND_WIDTH * (k - 1))       # bottom of the level
+        high = mid * (1 + BAND_WIDTH * k)            # top of the level
+        orders = [(price, size) for price, size in book["asks"] if low <= price < high]
+        dollars = sum(price * size for price, size in orders)
+        btc = sum(size for price, size in orders)
+        if btc > 0:
+            avg_price = dollars / btc
+        else:
+            avg_price = (low + high) / 2             # empty level: price doesn't matter, q = 0
+        levels[k] = {"q": dollars, "p": avg_price * (1 + fee), "p_no_fee": avg_price}
+    return levels
+
+books = {}
+for v in EXCHANGES:
+    books[v] = make_levels(snap["exchanges"][v], TAKER_FEE[v])
+
+# show the levels as a table: dollars for sale ($M) at each level, per exchange
+table = pd.DataFrame({v: {k: round(books[v][k]["q"] / 1e6, 2) for k in LEVELS} for v in EXCHANGES})
+table.index.name = "level"
+print("Dollars for sale at each level ($ millions):")
+print(table)
+
+
+# %% CELL 5 - The model ---------------------------------------------------------------------
+# This is the mixed-integer program from the paper, written in PuLP.
+# solve_model(goal, refill, budget, coinbase_only) returns the plan and its cost.
+
+def solve_model(goal, refill, budget, coinbase_only=False, relax=False):
+    model = pulp.LpProblem("btc_routing", pulp.LpMinimize)
+    pairs = [(v, u) for v in EXCHANGES for u in EXCHANGES if v != u]   # 12 transfer routes
+    M = budget                                                        # big number = total cash
+
+    # ----- decision variables -----
+    # x[v,k,t] = dollars spent at exchange v, level k, round t
+    x = pulp.LpVariable.dicts("x", (EXCHANGES, LEVELS, ROUNDS), lowBound=0)
+    # y[v,u,t] = dollars sent from exchange v to exchange u in round t
+    y = pulp.LpVariable.dicts("y", (pairs, ROUNDS), lowBound=0)
+    # B[v,t] = cash left at exchange v at the end of round t
+    B = pulp.LpVariable.dicts("B", (EXCHANGES, ROUNDS), lowBound=0)
+    # w[v,u,t] = 1 if any money is sent from v to u in round t (binary)
+    # (relax=True lets w be any number from 0 to 1: the "LP relaxation")
+    w_type = pulp.LpContinuous if relax else pulp.LpBinary
+    w = pulp.LpVariable.dicts("w", (pairs, ROUNDS), lowBound=0, upBound=1, cat=w_type)
+
+    # ----- objective: dollars spent on BTC + transfer fees -----
+    model += (pulp.lpSum(x[v][k][t] for v in EXCHANGES for k in LEVELS for t in ROUNDS)
+              + pulp.lpSum(TRANSFER_FEE * w[pr][t] for pr in pairs for t in ROUNDS))
+
+    # ----- (4) start: all cash at Coinbase, $0 elsewhere -----
+    start_cash = {v: (budget if v == START else 0) for v in EXCHANGES}
+
+    for v in EXCHANGES:
+        for t in ROUNDS:
+            # ----- (1) flow: cash now = cash before + arrivals from last round - sent - spent -----
+            cash_before = start_cash[v] if t == 1 else B[v][t - 1]
+            arrived = pulp.lpSum(y[(u, v)][t - 1] for u in EXCHANGES if u != v) if t > 1 else 0
+            sent = pulp.lpSum(y[(v, u)][t] for u in EXCHANGES if u != v)
+            spent = pulp.lpSum(x[v][k][t] for k in LEVELS)
+            model += B[v][t] == cash_before + arrived - sent - spent
+
+    for v in EXCHANGES:
+        for k in LEVELS:
+            q = books[v][k]["q"]
+            for t in ROUNDS:
+                # ----- (2a) refill: bought so far <= 9am amount + refills since -----
+                model += pulp.lpSum(x[v][k][s] for s in ROUNDS if s <= t) <= q + refill * (t - 1) * q
+                # ----- (2b) full-level cap: never buy more than a full level in one round -----
+                model += x[v][k][t] <= q
+
+    # ----- (3) target: BTC bought >= goal -----
+    model += pulp.lpSum(x[v][k][t] * (1 / books[v][k]["p"])
+                        for v in EXCHANGES for k in LEVELS for t in ROUNDS) >= goal
+
+    # ----- (5) fee switch: if money is sent (y > 0) then w = 1 -----
+    for pr in pairs:
+        for t in ROUNDS:
+            model += y[pr][t] <= M * w[pr][t]
+            if coinbase_only:
+                model += y[pr][t] == 0            # baseline: no transfers allowed
+
+    model.solve(pulp.PULP_CBC_CMD(msg=False))
+    status = pulp.LpStatus[model.status]
+    if status != "Optimal":
+        return {"status": status}
+
+    # ----- collect the answer in plain Python numbers -----
+    buys = {(v, k, t): x[v][k][t].value() for v in EXCHANGES for k in LEVELS for t in ROUNDS
+            if x[v][k][t].value() > 0.01}
+    moves = {(v, u, t): y[(v, u)][t].value() for (v, u) in pairs for t in ROUNDS
+             if y[(v, u)][t].value() > 0.01}
+    cash = {(v, t): B[v][t].value() for v in EXCHANGES for t in ROUNDS}
+    n_transfers = sum(w[pr][t].value() for pr in pairs for t in ROUNDS)
+    return {"status": status, "cost": pulp.value(model.objective), "buys": buys, "moves": moves,
+            "cash": cash, "n_transfers": n_transfers, "budget": budget,
+            "variables": len(model.variables()), "constraints": len(model.constraints)}
+
+
+def run(goal, refill):
+    # 1) Baseline: buy everything at Coinbase (huge budget so cash is never the problem)
+    base = solve_model(goal, refill, budget=1e12, coinbase_only=True)
+    if base["status"] != "Optimal":
+        return None, None
+    # 2) Smart plan: budget = 120% of the baseline cost, all of it starting at Coinbase
+    best = solve_model(goal, refill, budget=1.2 * base["cost"])
+    return best, base
+
+
+# %% CELL 6 - Run it and show the path and the cost breakdown ------------------------------
+
+def show(best, base):
+    if best is None or best["status"] != "Optimal":
+        print("No plan found: the goal is bigger than what these order books can supply.")
+        return
+    print(f"Model size: {best['variables']} variables, {best['constraints']} constraints\n")
+
+    # ---- the path, hour by hour ----
+    print("PATH THE MODEL TOOK")
+    for t in ROUNDS:
+        lines = []
+        for v in EXCHANGES:
+            spent = sum(d for (vv, k, tt), d in best["buys"].items() if vv == v and tt == t)
+            if spent > 0:
+                btc = sum(d / books[v][k]["p"] for (vv, k, tt), d in best["buys"].items() if vv == v and tt == t)
+                lvls = sorted(k for (vv, k, tt) in best["buys"] if vv == v and tt == t)
+                word = "level" if len(lvls) == 1 else "levels"
+                lines.append(f"bought {btc:.2f} BTC at {v} ({word} {', '.join(map(str, lvls))})")
+        for (v, u, tt), d in best["moves"].items():
+            if tt == t:
+                lines.append(f"sent ${d:,.0f} from {v} to {u} (arrives next hour, fee ${TRANSFER_FEE:,.0f})")
+        if lines:
+            print(f"  {HOURS[t]:>5}: " + "; ".join(lines))
+
+    # ---- the cost breakdown ----
+    btc_total = sum(d / books[v][k]["p"] for (v, k, t), d in best["buys"].items())
+    before_fees = sum(d / books[v][k]["p"] * books[v][k]["p_no_fee"] for (v, k, t), d in best["buys"].items())
+    trading_fees = sum(best["buys"].values()) - before_fees
+    best_price = min(books[v][1]["p_no_fee"] for v in EXCHANGES if books[v][1]["q"] > 0)
+    at_best = btc_total * best_price
+    transfer_fees = TRANSFER_FEE * round(best["n_transfers"])
+
+    print("\nCOST BREAKDOWN")
+    print(f"  {btc_total:.2f} BTC at the best 9am price   ${at_best:,.0f}")
+    print(f"  Extra for higher price levels      ${before_fees - at_best:,.0f}")
+    print(f"  Trading fees                       ${trading_fees:,.0f}")
+    print(f"  Transfer fees ({round(best['n_transfers'])})                  ${transfer_fees:,.0f}")
+    print(f"  TOTAL                              ${best['cost']:,.0f}")
+    print(f"\n  Coinbase only: ${base['cost']:,.0f}.   Saved: ${base['cost'] - best['cost']:,.0f}")
+
+best, base = run(GOAL_BTC, REFILL)
+show(best, base)
+
+
+# %% CELL 7 - Experiments: order size x refill rate -----------------------------------------
+# Runs the model for each order size and refill rate and shows how much routing saves.
+# (Order sizes are in dollars and turned into BTC with the Coinbase 9am price.)
+
+ORDER_SIZES = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 25_000_000]
+REFILL_RATES = [0, 0.25, 0.5, 1]
+price = snap["exchanges"]["Coinbase"]["mid"]
+
+rows = []
+for size in ORDER_SIZES:
+    for rho in REFILL_RATES:
+        goal = size / price
+        b, cb = run(goal, rho)
+        if b is None or b["status"] != "Optimal":
+            rows.append({"order $": size, "refill": rho, "result": "not enough BTC for sale"})
+            continue
+        rows.append({"order $": size, "refill": rho, "BTC": round(goal, 2),
+                     "smart plan $": round(b["cost"]), "Coinbase only $": round(cb["cost"]),
+                     "saved $": round(cb["cost"] - b["cost"]),
+                     "saved %": round(100 * (cb["cost"] - b["cost"]) / cb["cost"], 3),
+                     "transfers": round(b["n_transfers"])})
+
+results = pd.DataFrame(rows)
+print(results.to_string(index=False))
+
+
+# %% CELL 8 - LP relaxation (optional) ------------------------------------------------------
+# Same model, but w can be any number from 0 to 1 instead of only 0 or 1.
+# Its cost is a lower bound on the true cost; the gap shows how much the flat fees matter.
+
+relaxed = solve_model(GOAL_BTC, REFILL, budget=best["budget"], relax=True)
+print(f"MIP cost:            ${best['cost']:,.2f}")
+print(f"LP relaxation cost:  ${relaxed['cost']:,.2f}")
+print(f"Gap:                 ${best['cost'] - relaxed['cost']:,.2f}")
