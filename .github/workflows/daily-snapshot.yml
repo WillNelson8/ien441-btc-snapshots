@@ -3,8 +3,19 @@ name: Daily 9am snapshot
 
 on:
   schedule:
-    - cron: "40 13 * * *"   # 13:40 UTC = 8:40 am Eastern (EST). Starts early because GitHub can run late.
+    # GitHub's timer is "best effort": a scheduled run can start late or be skipped entirely
+    # (Nov 21 was skipped). So we ask for several start times; whichever starts first waits
+    # until 9:00 and takes the snapshot, and the later ones see today's file and stop.
+    - cron: "20 13 * * *"   # 8:20 am Eastern (EST = UTC-5)
+    - cron: "35 13 * * *"   # 8:35 am
+    - cron: "50 13 * * *"   # 8:50 am
+    - cron: "5 14 * * *"    # 9:05 am (backup if the earlier ones were skipped)
+    - cron: "20 14 * * *"   # 9:20 am (last backup)
   workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+concurrency:
+  group: snapshot           # never run two copies at once
+  cancel-in-progress: false
 
 permissions:
   contents: write             # needed to save the new file back into the repo
@@ -15,24 +26,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stop if today's 9am snapshot already exists
+        id: check
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          if [ "${{ github.event_name }}" = "schedule" ] && ls data/snapshot_${today}_1[3-5]*.json >/dev/null 2>&1; then
+            echo "Already have today's snapshot, nothing to do."
+            echo "done=yes" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-python@v5
+        if: steps.check.outputs.done != 'yes'
         with:
           python-version: "3.12"
 
       - run: pip install requests
+        if: steps.check.outputs.done != 'yes'
 
       - name: Wait until exactly 9:00 am Eastern (14:00 UTC)
-        if: github.event_name == 'schedule'
+        if: github.event_name == 'schedule' && steps.check.outputs.done != 'yes'
         run: |
           target=$(date -u -d "today 14:00" +%s)
           now=$(date -u +%s)
           if [ "$now" -lt "$target" ]; then sleep $((target - now)); fi
 
       - name: Take the snapshot
+        if: steps.check.outputs.done != 'yes'
         run: python collect_books.py
 
       - name: Save it to the repo
+        if: steps.check.outputs.done != 'yes'
         run: |
+          git pull --rebase
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/
