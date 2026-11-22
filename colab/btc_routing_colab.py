@@ -15,24 +15,27 @@ import pulp
 import pandas as pd
 
 
-# %% CELL 2 - Load one 9am order book snapshot --------------------------------------------
-# The snapshots come from the GitHub repo "ien441-btc-snapshots" (folder data/).
-# Download the snapshot you want from GitHub, then run this cell and pick the file
-# when Colab asks you to upload it.
+# %% CELL 2 - Load the price levels (levels.csv) -----------------------------------------
+# levels.csv is in the GitHub repo "ien441-btc-snapshots". It holds every snapshot already
+# split into 10 price levels per exchange (made by make_levels_csv.py, updated every day).
+# Download levels.csv from GitHub, run this cell, and upload it when Colab asks.
 
 try:
     from google.colab import files          # only works inside Colab
     uploaded = files.upload()               # opens a file picker
-    SNAPSHOT_FILE = list(uploaded.keys())[0]
+    LEVELS_FILE = list(uploaded.keys())[0]
 except ImportError:
-    SNAPSHOT_FILE = "snapshot.json"         # when running on a laptop instead of Colab
+    LEVELS_FILE = "levels.csv"              # when running on a laptop instead of Colab
 
-with open(SNAPSHOT_FILE) as f:
-    snap = json.load(f)
+levels_df = pd.read_csv(LEVELS_FILE)
+SNAPSHOTS = sorted(levels_df["snapshot"].unique())
+print("Snapshots in the file (date_time in UTC; 1400 = 9:00 am Eastern):")
+for name in SNAPSHOTS:
+    print("  ", name)
 
-print("Snapshot taken at (UTC):", snap["time_utc"])
-for name, book in snap["exchanges"].items():
-    print(f"  {name:9s} price ${book['mid']:,.2f}   {len(book['asks'])} sell orders saved")
+# Pick the snapshot to use. The last one in the list is the newest.
+SNAPSHOT = SNAPSHOTS[-1]
+print("\nUsing snapshot:", SNAPSHOT)
 
 
 # %% CELL 3 - Settings you can change ------------------------------------------------------
@@ -45,7 +48,6 @@ HOURS = {1: "9am", 2: "10am", 3: "11am", 4: "12pm", 5: "1pm",
          6: "2pm", 7: "3pm", 8: "4pm", 9: "5pm", 10: "6pm"}
 
 LEVELS = list(range(1, 11))  # 10 price levels (bands)
-BAND_WIDTH = 0.001           # each level is 0.1% wide: level 1 = 0 to 0.1% above the price, etc.
 
 # Taker fee = the % fee an exchange charges when you buy right away.
 # These are the $1M+ volume tier from each exchange's fee page (checked Nov 2026).
@@ -63,36 +65,29 @@ GOAL_BTC = 100              # D: how much BTC the desk must buy
 REFILL = 0.5                # rho: share of each price level that comes back every hour (0 to 1)
 
 
-# %% CELL 4 - Turn each order book into 10 price levels (p and q) ---------------------------
-# For each exchange, every sell order is put into a level by how far its price is above the
-# mid price. For each level:
+# %% CELL 4 - Get p and q for each exchange and level -------------------------------------
+# From levels.csv, for the chosen snapshot:
 #   q = dollars of BTC for sale in that level
-#   p = average price of that level (weighted by size), plus the taker fee
+#   p = average price of that level, plus the exchange's taker fee
 
-def make_levels(book, fee):
-    mid = book["mid"]
-    levels = {}
-    for k in LEVELS:
-        low = mid * (1 + BAND_WIDTH * (k - 1))       # bottom of the level
-        high = mid * (1 + BAND_WIDTH * k)            # top of the level
-        orders = [(price, size) for price, size in book["asks"] if low <= price < high]
-        dollars = sum(price * size for price, size in orders)
-        btc = sum(size for price, size in orders)
-        if btc > 0:
-            avg_price = dollars / btc
-        else:
-            avg_price = (low + high) / 2             # empty level: price doesn't matter, q = 0
-        levels[k] = {"q": dollars, "p": avg_price * (1 + fee), "p_no_fee": avg_price}
-    return levels
+def make_books(snapshot):
+    rows = levels_df[levels_df["snapshot"] == snapshot]
+    books = {}
+    for v in EXCHANGES:
+        books[v] = {}
+        for k in LEVELS:
+            r = rows[(rows["exchange"] == v) & (rows["level"] == k)].iloc[0]
+            books[v][k] = {"q": r["q_dollars"],
+                           "p": r["avg_price"] * (1 + TAKER_FEE[v]),
+                           "p_no_fee": r["avg_price"]}
+    return books
 
-books = {}
-for v in EXCHANGES:
-    books[v] = make_levels(snap["exchanges"][v], TAKER_FEE[v])
+books = make_books(SNAPSHOT)
 
 # show the levels as a table: dollars for sale ($M) at each level, per exchange
 table = pd.DataFrame({v: {k: round(books[v][k]["q"] / 1e6, 2) for k in LEVELS} for v in EXCHANGES})
 table.index.name = "level"
-print("Dollars for sale at each level ($ millions):")
+print("Dollars for sale at each level ($ millions), snapshot", SNAPSHOT)
 print(table)
 
 
@@ -231,7 +226,8 @@ show(best, base)
 
 ORDER_SIZES = [100_000, 500_000, 1_000_000, 5_000_000, 10_000_000, 25_000_000]
 REFILL_RATES = [0, 0.25, 0.5, 1]
-price = snap["exchanges"]["Coinbase"]["mid"]
+rows_cb = levels_df[(levels_df["snapshot"] == SNAPSHOT) & (levels_df["exchange"] == "Coinbase")]
+price = rows_cb["mid"].iloc[0]
 
 rows = []
 for size in ORDER_SIZES:
@@ -259,3 +255,33 @@ relaxed = solve_model(GOAL_BTC, REFILL, budget=best["budget"], relax=True)
 print(f"MIP cost:            ${best['cost']:,.2f}")
 print(f"LP relaxation cost:  ${relaxed['cost']:,.2f}")
 print(f"Gap:                 ${best['cost'] - relaxed['cost']:,.2f}")
+
+
+# %% CELL 9 - Run every snapshot and average the results ------------------------------------
+# For each snapshot in levels.csv: solve the model and the Coinbase-only baseline,
+# then show the average savings and the lowest/highest day.
+# Set USE to a list of snapshot names to pick only some (for example only the 9 am ones).
+
+USE = [s for s in SNAPSHOTS if s.endswith("_1400")] or SNAPSHOTS   # 9 am ones if there are any
+SIZE = 10_000_000          # order size in dollars
+RHO = REFILL
+
+per_day = []
+for name in USE:
+    books = make_books(name)                                    # the model reads this global
+    mid = levels_df[(levels_df["snapshot"] == name) & (levels_df["exchange"] == "Coinbase")]["mid"].iloc[0]
+    b, cb = run(SIZE / mid, RHO)
+    if b is None or b["status"] != "Optimal":
+        per_day.append({"snapshot": name, "result": "not enough BTC for sale"})
+        continue
+    per_day.append({"snapshot": name, "saved $": round(cb["cost"] - b["cost"]),
+                    "saved %": round(100 * (cb["cost"] - b["cost"]) / cb["cost"], 4),
+                    "transfers": round(b["n_transfers"])})
+
+per_day = pd.DataFrame(per_day)
+print(per_day.to_string(index=False))
+if "saved %" in per_day:
+    print(f"\nAverage saved: ${per_day['saved $'].mean():,.0f} ({per_day['saved %'].mean():.4f}%)")
+    print(f"Lowest day:    ${per_day['saved $'].min():,.0f}     Highest day: ${per_day['saved $'].max():,.0f}")
+    print(f"Days with a transfer: {(per_day['transfers'] > 0).sum()} of {len(per_day)}")
+books = make_books(SNAPSHOT)   # put the chosen snapshot back for the other cells

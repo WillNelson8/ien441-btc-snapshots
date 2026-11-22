@@ -12,6 +12,8 @@ starting with all cash at Coinbase.
 | `paper/` | The full paper as PDF (readable on GitHub) and Word. |
 | `colab/btc_routing.ipynb` | The Colab notebook: builds the price levels, solves the model, prints the path and cost breakdown, runs the experiments. |
 | `colab/btc_routing_colab.py` | Same notebook as plain text, one `# %% CELL` block per Colab cell. |
+| `levels.csv` | **The one file the model runs on:** every snapshot split into 10 price levels per exchange (q = dollars for sale, average price). Rebuilt automatically after each snapshot. |
+| `make_levels_csv.py` | Builds `levels.csv` from the snapshots in `data/`. |
 | `collect_books.py` | Takes one order book snapshot from all 4 exchanges. |
 | `data/` | The daily 9 am snapshots (one JSON file per day). |
 | `.github/workflows/daily-snapshot.yml` | Runs `collect_books.py` automatically every day at 9 am Eastern. |
@@ -22,8 +24,9 @@ starting with all cash at Coinbase.
 1. Go to colab.research.google.com, then **File > Open notebook > GitHub**.
 2. Tick **Include private repos** (and sign in to GitHub if asked).
 3. Pick `WillNelson8/ien441-btc-snapshots` and open `colab/btc_routing.ipynb`.
-4. Download a snapshot from `data/` (click the file, then the download button).
-5. Run the cells in order. Cell 2 asks you to upload the snapshot.
+4. Download `levels.csv` (click the file, then the download button).
+5. Run the cells in order. Cell 2 asks you to upload `levels.csv` and uses the newest snapshot
+   (change `SNAPSHOT` there to pick another). Cell 9 runs every 9 am snapshot and averages the results.
 
 Colab does not save back to GitHub on its own. Use **File > Save a copy in GitHub** to save changes.
 
