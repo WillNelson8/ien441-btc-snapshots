@@ -52,16 +52,41 @@ HOURS = {1: "9am", 2: "10am", 3: "11am", 4: "12pm", 5: "1pm",
 LEVELS = list(range(1, 11))  # 10 price levels (bands)
 
 # Taker fee = the % fee an exchange charges when you buy right away.
-# These are the $1M+ volume tier from each exchange's fee page (checked Nov 2026).
+# Fees go down as your 30-day trading volume goes up, so we pick ONE volume for every exchange:
+# a desk that trades about $25M of crypto per 30 days. Each number is the tier that $25M lands in,
+# from each exchange's own fee page (checked Nov 22, 2026):
+#   Coinbase Exchange  $15M-$75M tier   help.coinbase.com/en/exchange/trading-and-funding/exchange-fees
+#   Kraken Pro         Tier 12 ($10M+)  kraken.com/pro/fees
+#   Gemini ActiveTrader $20M tier       gemini.com/fees/activetrader-fee-schedule
+#   Bitstamp           > $20M tier      bitstamp.net/fee-schedule (same in the Nov 24, 2026 update)
 TAKER_FEE = {
-    "Coinbase": 0.0018,
-    "Kraken":   0.0018,
-    "Gemini":   0.0010,
-    "Bitstamp": 0.0020,     # PLACEHOLDER - not confirmed yet, check bitstamp.net/fee-schedule
+    "Coinbase": 0.0016,     # 0.16%
+    "Kraken":   0.0010,     # 0.10%
+    "Gemini":   0.0005,     # 0.05%
+    "Bitstamp": 0.0010,     # 0.10%
 }
 
-# Flat fee for one cash transfer between two exchanges (the F in the model).
-TRANSFER_FEE = 25.0         # PLACEHOLDER - replace with the real USD/USDC withdrawal fees
+# Cash moves between exchanges by USD bank wire.
+# Cost of one transfer = withdrawal fee at the sending exchange + deposit fee at the receiving one.
+WIRE_OUT = {                # flat $ fee to send a USD wire out of each exchange
+    "Coinbase": 25.0,       # Coinbase Exchange fee page: wire withdrawal $25
+    "Kraken":   4.0,        # Kraken support "Cash withdrawal fees": FedWire $4
+    "Gemini":   25.0,       # Gemini support: $25 wire withdrawal processing fee
+    "Bitstamp": 0.0,        # Bitstamp charges a % instead, see WIRE_OUT_PCT
+}
+WIRE_OUT_PCT = {"Coinbase": 0, "Kraken": 0, "Gemini": 0,
+                "Bitstamp": 0.001}   # Bitstamp international wire withdrawal: 0.1% of the amount
+WIRE_IN = {                 # flat $ fee to receive a USD wire at each exchange
+    "Coinbase": 10.0,       # Coinbase Exchange fee page: wire deposit $10
+    "Kraken":   0.0,        # Kraken support "Cash deposit options": FedWire deposit free
+    "Gemini":   0.0,        # Gemini support: no fee on wire deposits
+    "Bitstamp": 300.0,      # Bitstamp: 0.05% of the deposit, max $300. Any deposit of $600K or more
+}                           #   pays exactly $300, so we use $300 (a little high for small deposits)
+
+# F[v,u] = flat fee for one transfer from v to u (the F in the model, one per route)
+TRANSFER_FEE = {(v, u): WIRE_OUT[v] + WIRE_IN[u] for v in EXCHANGES for u in EXCHANGES if v != u}
+# extra % fee per dollar sent (only matters for money sent OUT of Bitstamp)
+TRANSFER_PCT = {(v, u): WIRE_OUT_PCT[v] for v in EXCHANGES for u in EXCHANGES if v != u}
 
 GOAL_BTC = 100              # D: how much BTC the desk must buy
 REFILL = 0.5                # rho: share of each price level that comes back every hour (0 to 1)
@@ -116,9 +141,10 @@ def solve_model(goal, refill, budget, coinbase_only=False, relax=False):
     w = {(v, u): {t: pulp.LpVariable(f"w_{v}_{u}_{t}", lowBound=0, upBound=1, cat=w_type) for t in ROUNDS}
          for (v, u) in pairs}
 
-    # ----- objective: dollars spent on BTC + transfer fees -----
+    # ----- objective: dollars spent on BTC + transfer fees (flat fee F + any % fee) -----
     model += (pulp.lpSum(x[v][k][t] for v in EXCHANGES for k in LEVELS for t in ROUNDS)
-              + pulp.lpSum(TRANSFER_FEE * w[pr][t] for pr in pairs for t in ROUNDS))
+              + pulp.lpSum(TRANSFER_FEE[pr] * w[pr][t] + TRANSFER_PCT[pr] * y[pr][t]
+                           for pr in pairs for t in ROUNDS))
 
     # ----- (4) start: all cash at Coinbase, $0 elsewhere -----
     start_cash = {v: (budget if v == START else 0) for v in EXCHANGES}
@@ -163,7 +189,7 @@ def solve_model(goal, refill, budget, coinbase_only=False, relax=False):
     moves = {(v, u, t): y[(v, u)][t].value() for (v, u) in pairs for t in ROUNDS
              if y[(v, u)][t].value() > 0.01}
     cash = {(v, t): B[v][t].value() for v in EXCHANGES for t in ROUNDS}
-    n_transfers = sum(w[pr][t].value() for pr in pairs for t in ROUNDS)
+    n_transfers = len(moves)      # count the transfers that actually moved money
     return {"status": status, "cost": pulp.value(model.objective), "buys": buys, "moves": moves,
             "cash": cash, "n_transfers": n_transfers, "budget": budget,
             "variables": len(model.variables()), "constraints": len(model.constraints)}
@@ -200,7 +226,8 @@ def show(best, base):
                 lines.append(f"bought {btc:.2f} BTC at {v} ({word} {', '.join(map(str, lvls))})")
         for (v, u, tt), d in best["moves"].items():
             if tt == t:
-                lines.append(f"sent ${d:,.0f} from {v} to {u} (arrives next hour, fee ${TRANSFER_FEE:,.0f})")
+                fee = TRANSFER_FEE[(v, u)] + TRANSFER_PCT[(v, u)] * d
+                lines.append(f"sent ${d:,.0f} from {v} to {u} (arrives next hour, fee ${fee:,.0f})")
         if lines:
             print(f"  {HOURS[t]:>5}: " + "; ".join(lines))
 
@@ -210,7 +237,8 @@ def show(best, base):
     trading_fees = sum(best["buys"].values()) - before_fees
     best_price = min(books[v][1]["p_no_fee"] for v in EXCHANGES if books[v][1]["q"] > 0)
     at_best = btc_total * best_price
-    transfer_fees = TRANSFER_FEE * round(best["n_transfers"])
+    transfer_fees = sum(TRANSFER_FEE[(v, u)] + TRANSFER_PCT[(v, u)] * d
+                        for (v, u, t), d in best["moves"].items())
 
     print("\nCOST BREAKDOWN")
     print(f"  {btc_total:.2f} BTC at the best 9am price   ${at_best:,.0f}")
