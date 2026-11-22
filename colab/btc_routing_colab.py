@@ -8,11 +8,13 @@
 # %% CELL 1 - Install and import the tools ------------------------------------------------
 # PuLP builds the optimization model and solves it with the free CBC solver.
 # (In Colab, the line below installs PuLP. The "!" means "run this as a terminal command".)
-# !pip install pulp
+# Use the exact version this notebook was tested with. If Colab already had another
+# version loaded, do Runtime > Restart session after this cell, then run all again.
+# !pip install pulp==3.3.2
 
-import json
 import pulp
 import pandas as pd
+print("PuLP version:", pulp.__version__)
 
 
 # %% CELL 2 - Load the price levels (levels.csv) -----------------------------------------
