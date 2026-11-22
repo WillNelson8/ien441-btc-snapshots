@@ -102,15 +102,17 @@ def solve_model(goal, refill, budget, coinbase_only=False, relax=False):
 
     # ----- decision variables -----
     # x[v,k,t] = dollars spent at exchange v, level k, round t
-    x = pulp.LpVariable.dicts("x", (EXCHANGES, LEVELS, ROUNDS), lowBound=0)
+    x = {v: {k: {t: pulp.LpVariable(f"x_{v}_{k}_{t}", lowBound=0) for t in ROUNDS}
+                 for k in LEVELS} for v in EXCHANGES}
     # y[v,u,t] = dollars sent from exchange v to exchange u in round t
-    y = pulp.LpVariable.dicts("y", (pairs, ROUNDS), lowBound=0)
+    y = {(v, u): {t: pulp.LpVariable(f"y_{v}_{u}_{t}", lowBound=0) for t in ROUNDS} for (v, u) in pairs}
     # B[v,t] = cash left at exchange v at the end of round t
-    B = pulp.LpVariable.dicts("B", (EXCHANGES, ROUNDS), lowBound=0)
+    B = {v: {t: pulp.LpVariable(f"B_{v}_{t}", lowBound=0) for t in ROUNDS} for v in EXCHANGES}
     # w[v,u,t] = 1 if any money is sent from v to u in round t (binary)
     # (relax=True lets w be any number from 0 to 1: the "LP relaxation")
     w_type = pulp.LpContinuous if relax else pulp.LpBinary
-    w = pulp.LpVariable.dicts("w", (pairs, ROUNDS), lowBound=0, upBound=1, cat=w_type)
+    w = {(v, u): {t: pulp.LpVariable(f"w_{v}_{u}_{t}", lowBound=0, upBound=1, cat=w_type) for t in ROUNDS}
+         for (v, u) in pairs}
 
     # ----- objective: dollars spent on BTC + transfer fees -----
     model += (pulp.lpSum(x[v][k][t] for v in EXCHANGES for k in LEVELS for t in ROUNDS)
