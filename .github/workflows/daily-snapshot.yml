@@ -37,6 +37,13 @@ jobs:
             echo "Already have today's snapshot, nothing to do."
             echo "done=yes" >> "$GITHUB_OUTPUT"
           fi
+          # GitHub sometimes starts scheduled runs hours late (Nov 22: 2:23 pm instead of 8:20 am).
+          # A snapshot taken that late is not a 9am snapshot, so skip it.
+          late=$(date -u -d "today 14:40" +%s)
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && [ "$(date -u +%s)" -gt "$late" ]; then
+            echo "Too late for the 9am snapshot, skipping."
+            echo "done=yes" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-python@v5
         if: steps.check.outputs.done != 'yes'
@@ -64,9 +71,9 @@ jobs:
       - name: Save it to the repo
         if: steps.check.outputs.done != 'yes'
         run: |
-          git pull --rebase
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/ levels.csv
           git commit -m "Snapshot $(date -u +%Y-%m-%d)" || echo "nothing new"
+          git pull --rebase           # commit first, then catch up with any newer pushes
           git push
