@@ -12,6 +12,9 @@ on:
     - cron: "5 14 * * *"    # 9:05 am (backup if the earlier ones were skipped)
     - cron: "20 14 * * *"   # 9:20 am (last backup)
   workflow_dispatch:          # lets you run it by hand from the Actions tab
+  push:                       # the Claude cloud task pushes trigger/run.txt at 8:50 am Eastern;
+    paths:                    # that push starts this workflow (GitHub's own timer has been unreliable)
+      - "trigger/**"
 
 concurrency:
   group: snapshot           # never run two copies at once
@@ -30,7 +33,7 @@ jobs:
         id: check
         run: |
           today=$(date -u +%Y-%m-%d)
-          if [ "${{ github.event_name }}" = "schedule" ] && ls data/snapshot_${today}_1[3-5]*.json >/dev/null 2>&1; then
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] && ls data/snapshot_${today}_1[3-5]*.json >/dev/null 2>&1; then
             echo "Already have today's snapshot, nothing to do."
             echo "done=yes" >> "$GITHUB_OUTPUT"
           fi
@@ -44,7 +47,7 @@ jobs:
         if: steps.check.outputs.done != 'yes'
 
       - name: Wait until exactly 9:00 am Eastern (14:00 UTC)
-        if: github.event_name == 'schedule' && steps.check.outputs.done != 'yes'
+        if: github.event_name != 'workflow_dispatch' && steps.check.outputs.done != 'yes'
         run: |
           target=$(date -u -d "today 14:00" +%s)
           now=$(date -u +%s)
