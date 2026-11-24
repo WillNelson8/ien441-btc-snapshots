@@ -20,16 +20,39 @@ print("PuLP version:", pulp.__version__)
 # %% CELL 2 - Load the price levels (levels.csv) -----------------------------------------
 # levels.csv is in the GitHub repo "ien441-btc-snapshots". It holds every snapshot already
 # split into 10 price levels per exchange (made by make_levels_csv.py, updated every day).
-# Download levels.csv from GitHub, run this cell, and upload it when Colab asks.
+#
+# This cell reads it straight from GitHub, so you never download or upload it.
+# The repo is private, so Colab needs a GitHub token (set up once):
+#   1) On GitHub: Settings > Developer settings > Fine-grained tokens > Generate new token.
+#      Repository access: only ien441-btc-snapshots.  Permissions: Contents = Read-only.
+#   2) In Colab: click the key icon on the left (Secrets), add a secret named GITHUB_TOKEN,
+#      paste the token as its value, and turn on "Notebook access".
+# If that does not work, the cell opens a file picker so you can upload the CSV instead.
 
-try:
-    from google.colab import files          # only works inside Colab
-    uploaded = files.upload()               # opens a file picker
-    LEVELS_FILE = list(uploaded.keys())[0]
-except ImportError:
-    LEVELS_FILE = "levels.csv"              # when running on a laptop instead of Colab
+import io
 
-levels_df = pd.read_csv(LEVELS_FILE)
+REPO = "WillNelson8/ien441-btc-snapshots"
+
+def load_csv(name):
+    # read a CSV from the GitHub repo (in Colab) or from this folder (on a laptop)
+    try:
+        from google.colab import userdata, files      # only works inside Colab
+    except ImportError:
+        return pd.read_csv(name)                      # on a laptop: the file next to this notebook
+    try:
+        import requests
+        token = userdata.get("GITHUB_TOKEN")
+        url = f"https://raw.githubusercontent.com/{REPO}/main/{name}"
+        r = requests.get(url, headers={"Authorization": f"token {token}"}, timeout=30)
+        r.raise_for_status()
+        print(f"Loaded {name} from GitHub")
+        return pd.read_csv(io.StringIO(r.text))
+    except Exception as e:
+        print(f"Could not read {name} from GitHub ({e}). Upload it instead:")
+        uploaded = files.upload()                     # opens a file picker
+        return pd.read_csv(io.BytesIO(list(uploaded.values())[0]))
+
+levels_df = load_csv("levels.csv")
 SNAPSHOTS = sorted(levels_df["snapshot"].unique())
 print("Snapshots in the file (date_time in UTC; 1400 = 9:00 am Eastern):")
 for name in SNAPSHOTS:
@@ -310,3 +333,50 @@ if "saved %" in per_day:
     print(f"Lowest day:    ${per_day['saved $'].min():,.0f}     Highest day: ${per_day['saved $'].max():,.0f}")
     print(f"Days with a transfer: {(per_day['transfers'] > 0).sum()} of {len(per_day)}")
 books = make_books(SNAPSHOT)   # put the chosen snapshot back for the other cells
+
+
+# %% CELL 10 - Run every hourly snapshot (Mac backups) -----------------------------------
+# The Mac takes a snapshot every hour from 9 am to 7 pm Eastern (mac-backup/hourly/).
+# levels_hourly.csv holds those, split into price levels the same way as levels.csv.
+# For each hour: solve the model as if the order started at that hour, compare with
+# Coinbase only, and save the table as hourly_results.csv.
+
+hourly_df = load_csv("levels_hourly.csv")
+HOURLY = sorted(hourly_df["snapshot"].unique())
+SIZE_BTC = GOAL_BTC        # order size (BTC), from Cell 3
+RHO = REFILL               # refill rate, from Cell 3
+
+daily_df = levels_df       # keep the 9 am data to put back at the end
+levels_df = hourly_df      # make_books reads levels_df
+rows = []
+for name in HOURLY:
+    books = make_books(name)                                    # the model reads this global
+    utc = pd.to_datetime(hourly_df[hourly_df["snapshot"] == name]["time_utc"].iloc[0])
+    eastern = utc.tz_localize("UTC").tz_convert("America/New_York")
+    b, cb = run(SIZE_BTC, RHO)
+    row = {"snapshot": name, "date": eastern.strftime("%Y-%m-%d"), "start (ET)": eastern.strftime("%I:%M %p")}
+    if b is None or b["status"] != "Optimal":
+        row["result"] = "not enough BTC for sale"
+    else:
+        row.update({"smart plan $": round(b["cost"]), "Coinbase only $": round(cb["cost"]),
+                    "saved $": round(cb["cost"] - b["cost"]),
+                    "saved %": round(100 * (cb["cost"] - b["cost"]) / cb["cost"], 3),
+                    "transfers": b["n_transfers"],
+                    "moves": ", ".join(f"{v} to {u} (round {t})" for (v, u, t) in b["moves"])})
+    rows.append(row)
+levels_df = daily_df       # put the 9 am data back for the other cells
+books = make_books(SNAPSHOT)
+
+hourly_results = pd.DataFrame(rows)
+print(f"{SIZE_BTC} BTC, refill rate {RHO}")
+print(hourly_results.drop(columns=["snapshot", "moves"]).to_string(index=False))
+for day, g in hourly_results.dropna(subset=["saved $"]).groupby("date"):
+    print(f"\n{day}: {len(g)} hours, average saved ${g['saved $'].mean():,.0f}, "
+          f"lowest ${g['saved $'].min():,.0f}, highest ${g['saved $'].max():,.0f}")
+
+hourly_results.to_csv("hourly_results.csv", index=False)
+try:
+    from google.colab import files
+    files.download("hourly_results.csv")   # saves it to your computer
+except ImportError:
+    print("\nSaved hourly_results.csv")

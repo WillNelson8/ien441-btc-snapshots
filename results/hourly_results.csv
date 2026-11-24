@@ -1,0 +1,19 @@
+snapshot,date,start (ET),smart plan $,Coinbase only $,saved $,saved %,transfers,moves
+2026-11-22_1700,2026-11-22,12:00 PM,6124888,6129629,4741,0.077,3,"Coinbase to Kraken (round 2), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-22_1800,2026-11-22,01:00 PM,6082548,6086940,4392,0.072,1,Coinbase to Bitstamp (round 3)
+2026-11-22_1900,2026-11-22,02:00 PM,6074908,6079348,4440,0.073,3,"Coinbase to Kraken (round 3), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-22_2000,2026-11-22,03:00 PM,6071813,6076766,4953,0.082,3,"Coinbase to Kraken (round 1), Kraken to Gemini (round 3), Kraken to Bitstamp (round 2)"
+2026-11-22_2100,2026-11-22,04:00 PM,6090584,6095035,4451,0.073,3,"Coinbase to Kraken (round 2), Kraken to Gemini (round 3), Kraken to Bitstamp (round 3)"
+2026-11-22_2200,2026-11-22,05:00 PM,6092978,6097776,4798,0.079,3,"Coinbase to Kraken (round 3), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-22_2300,2026-11-22,06:00 PM,6111275,6121054,9779,0.16,1,Coinbase to Kraken (round 2)
+2026-11-23_1408,2026-11-23,09:08 AM,6303781,6309728,5947,0.094,1,Coinbase to Bitstamp (round 4)
+2026-11-23_1500,2026-11-23,10:00 AM,6294243,6296138,1895,0.03,1,Coinbase to Kraken (round 3)
+2026-11-23_1600,2026-11-23,11:00 AM,6291014,6295380,4367,0.069,3,"Coinbase to Kraken (round 1), Kraken to Gemini (round 2), Kraken to Bitstamp (round 3)"
+2026-11-23_1700,2026-11-23,12:00 PM,6227446,6231205,3759,0.06,1,Coinbase to Bitstamp (round 3)
+2026-11-23_1800,2026-11-23,01:00 PM,6171036,6175409,4373,0.071,1,Coinbase to Kraken (round 2)
+2026-11-23_1900,2026-11-23,02:00 PM,6138056,6143857,5802,0.094,3,"Coinbase to Kraken (round 3), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-23_2000,2026-11-23,03:00 PM,6129823,6132223,2400,0.039,1,Coinbase to Kraken (round 1)
+2026-11-23_2100,2026-11-23,04:00 PM,6128799,6129037,238,0.004,2,"Coinbase to Kraken (round 1), Kraken to Gemini (round 3)"
+2026-11-23_2200,2026-11-23,05:00 PM,6133477,6138723,5246,0.085,3,"Coinbase to Kraken (round 3), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-23_2300,2026-11-23,06:00 PM,6124729,6130376,5647,0.092,3,"Coinbase to Kraken (round 3), Kraken to Gemini (round 4), Kraken to Bitstamp (round 4)"
+2026-11-24_0000,2026-11-23,07:00 PM,6124839,6131598,6759,0.11,3,"Coinbase to Kraken (round 1), Kraken to Gemini (round 2), Kraken to Bitstamp (round 2)"

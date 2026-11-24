@@ -23,18 +23,23 @@
 #   avg_price       size-weighted average price in the level, before fees ($)
 #
 # Run:  python make_levels_csv.py        (GitHub also runs it after every new snapshot)
+#       python make_levels_csv.py mac-backup/hourly/data levels_hourly.csv
+#                                        (same thing for the Mac hourly backups)
 # ------------------------------------------------------------------------------------------
 
 import csv
 import glob
 import json
 import os
+import sys
 
 LEVELS = 10
 BAND_WIDTH = 0.001   # each level is 0.1% wide
+FOLDER = sys.argv[1] if len(sys.argv) > 1 else "data"          # where the snapshots are
+OUT = sys.argv[2] if len(sys.argv) > 2 else "levels.csv"       # file to write
 
 rows = []
-for path in sorted(glob.glob("data/snapshot_*.json")):
+for path in sorted(glob.glob(f"{FOLDER}/snapshot_*.json")):
     name = os.path.basename(path).replace("snapshot_", "").replace(".json", "")
     with open(path) as f:
         snap = json.load(f)
@@ -53,10 +58,10 @@ for path in sorted(glob.glob("data/snapshot_*.json")):
             rows.append([name, snap["time_utc"], exchange, round(mid, 2), k, round(low, 2), round(high, 2),
                          round(dollars, 2), round(btc, 6), round(avg, 2)])
 
-with open("levels.csv", "w", newline="") as f:
+with open(OUT, "w", newline="") as f:
     w = csv.writer(f)
     w.writerow(["snapshot", "time_utc", "exchange", "mid", "level", "low_price", "high_price",
                 "q_dollars", "btc_for_sale", "avg_price"])
     w.writerows(rows)
 
-print(f"levels.csv written: {len(rows)} rows from {len(set(r[0] for r in rows))} snapshots")
+print(f"{OUT} written: {len(rows)} rows from {len(set(r[0] for r in rows))} snapshots")
