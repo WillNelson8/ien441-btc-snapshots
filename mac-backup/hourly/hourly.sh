@@ -11,7 +11,7 @@ for h in 08 09 10 11 12 13 14 15 16 17 18; do
   target=$(date -j -f "%Y-%m-%d %H:%M:%S" "$day $h:00:00" +%s)
   now=$(date +%s)
   if [ "$now" -gt $((target + 300)) ]; then continue; fi      # this hour already passed
-  if [ "$now" -lt "$target" ]; then sleep $((target - now)); fi
+  while [ "$(date +%s)" -lt "$target" ]; do sleep 30; done      # check the clock every 30 s (a long sleep runs late if the Mac sleeps)
   echo "=== $(date) ===" >> hourly.log
   /opt/anaconda3/bin/python3 ../../collect_books.py >> hourly.log 2>&1
 done
